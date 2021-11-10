@@ -22,6 +22,9 @@
 
 ;;; Code:
 
+(declare-function meow--mix-color "meow-util")
+(require 'dash)
+
 (defface meow-normal-indicator
   '((((class color) (background dark))
      ())
@@ -30,12 +33,20 @@
   "Normal state indicator."
   :group 'meow)
 
+(defface meow-bmacro-indicator
+  '((((class color) (background dark))
+     ())
+    (((class color) (background light))
+     ()))
+  "Cursor state indicator"
+  :group 'meow)
+
 (defface meow-keypad-indicator
   '((((class color) (background dark))
      ())
     (((class color) (background light))
      ()))
-  "Keypad indicator"
+  "Keypad state indicator"
   :group 'meow)
 
 (defface meow-insert-indicator
@@ -43,7 +54,7 @@
      ())
     (((class color) (background light))
      ()))
-  "Insert indicator"
+  "Insert state indicator"
   :group 'meow)
 
 (defface meow-motion-indicator
@@ -51,7 +62,7 @@
      ())
     (((class color) (background light))
      ()))
-  "Motion indicator"
+  "Motion state indicator"
   :group 'meow)
 
 (defface meow-normal-cursor
@@ -86,6 +97,24 @@
   "Keypad state cursor."
   :group 'meow)
 
+(defface meow-bmacro-cursor
+  '((((class color) (background dark))
+     (:inherit cursor))
+    (((class color) (background light))
+     (:inherit cursor)))
+  "Keypad state cursor."
+  :group 'meow)
+
+(defface meow-bmacro-cursor
+  '((t (:inherit cursor)))
+  "BMACRO cursor face."
+  :group 'meow)
+
+(defface meow-bmacro-selection
+  '((t (:inherit region)))
+  "BMACRO selection face."
+  :group 'meow)
+
 (defface meow-unknown-cursor
   '((((class color) (background dark))
      (:inherit cursor))
@@ -94,56 +123,69 @@
   "Unknown state cursor."
   :group 'meow)
 
+(defface meow-region-cursor-1
+  `((((class color) (background dark)))
+    (((class color) (background light))))
+  "Indicator for region direction."
+  :group 'meow)
+
+(defface meow-region-cursor-2
+  `((((class color) (background dark)))
+    (((class color) (background light))))
+  "Indicator for region direction."
+  :group 'meow)
+
+(defface meow-region-cursor-3
+  `((((class color) (background dark)))
+    (((class color) (background light))))
+  "Indicator for region direction."
+  :group 'meow)
+
+(defface meow-kmacro-cursor
+  `((t (:underline t)))
+  "Indicator for region direction."
+  :group 'meow)
+
 (defface meow-search-highlight
   '((t (:inherit lazy-highlight)))
   "Search target highlight"
   :group 'meow)
 
-(defface meow-position-highlight-number-1
+(defface meow-position-highlight-number
   '((((class color) (background dark))
-     (:foreground "grey90" :inverse-video t))
+     (:inherit default))
     (((class color) (background light))
-     (:foreground "grey20" :inverse-video t)))
+     (:inherit default)))
+  "Num position highlight"
+  :group 'meow)
+
+(defface meow-position-highlight-number-1
+  '((t (:inherit meow-position-highlight-number)))
   "Num position highlight"
   :group 'meow)
 
 (defface meow-position-highlight-number-2
-  '((((class color) (background dark))
-     (:foreground "grey70" :inverse-video t))
-    (((class color) (background light))
-     (:foreground "grey40" :inverse-video t)))
+  '((t (:inherit meow-position-highlight-number)))
   "Num position highlight"
   :group 'meow)
 
 (defface meow-position-highlight-number-3
-  '((((class color) (background dark))
-     (:foreground "grey60" :inverse-video t))
-    (((class color) (background light))
-     (:foreground "grey60" :inverse-video t)))
+  '((t (:inherit meow-position-highlight-number)))
   "Num position highlight"
   :group 'meow)
 
 (defface meow-position-highlight-reverse-number-1
-  '((((class color) (background dark))
-     (:foreground "grey90" :inverse-video t))
-    (((class color) (background light))
-     (:foreground "grey20" :inverse-video t)))
+  '((t (:inherit meow-position-highlight-number-1)))
   "Num position highlight"
   :group 'meow)
 
 (defface meow-position-highlight-reverse-number-2
-  '((((class color) (background dark))
-     (:foreground "grey70" :inverse-video t))
-    (((class color) (background light))
-     (:foreground "grey40" :inverse-video t)))
+  '((t (:inherit meow-position-highlight-number-2)))
   "Num position highlight"
   :group 'meow)
 
 (defface meow-position-highlight-reverse-number-3
-  '((((class color) (background dark))
-     (:foreground "grey60" :inverse-video t))
-    (((class color) (background light))
-     (:foreground "grey60" :inverse-video t)))
+  '((t (:inherit meow-position-highlight-number-3)))
   "Num position highlight"
   :group 'meow)
 
@@ -170,6 +212,49 @@
      (:foreground "grey10")))
   "Face for Meow cheatsheet highlight text."
   :group 'meow)
+
+(defun meow--prepare-face (&rest _ignore)
+  (when meow-use-dynamic-face-color
+    (when-let ((r (face-background 'region nil t))
+               (c (face-background 'cursor nil t))
+               (s (face-background 'secondary-selection nil t))
+               (b (face-background 'default nil t))
+               (c-b-3 (meow--mix-color c b 3)))
+      (-let (((c1 c2 c3) (meow--mix-color c r 3)))
+        (set-face-attribute 'meow-region-cursor-1
+                            nil
+                            :background c1
+                            :foreground (face-foreground 'default)
+                            :distant-foreground (face-background 'default))
+        (set-face-attribute 'meow-region-cursor-2
+                            nil
+                            :background c2
+                            :foreground (face-foreground 'default)
+                            :distant-foreground (face-background 'default))
+        (set-face-attribute 'meow-region-cursor-3
+                            nil
+                            :background c3
+                            :foreground (face-foreground 'default)
+                            :distant-foreground (face-background 'default)))
+      (set-face-attribute 'meow-position-highlight-number nil
+                          :foreground (face-background 'default)
+                          :distant-foreground (face-foreground 'default))
+
+      (set-face-background 'meow-position-highlight-number-1 (car c-b-3))
+      (set-face-background 'meow-position-highlight-number-2 (cadr c-b-3))
+      (set-face-background 'meow-position-highlight-number-3 (caddr c-b-3))
+
+      (set-face-attribute 'meow-bmacro-selection
+                          nil
+                          :foreground (face-background 'default)
+                          :distant-foreground (face-foreground 'default)
+                          :background (car (meow--mix-color r s 1)))
+      (set-face-attribute 'meow-bmacro-cursor
+                          nil
+                          :foreground (face-background 'default)
+                          :distant-foreground (face-foreground 'default)
+                          :background (car (meow--mix-color c s 1))))))
+
 
 (provide 'meow-face)
 ;;; meow-face.el ends here

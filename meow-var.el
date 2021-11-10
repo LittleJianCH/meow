@@ -28,6 +28,18 @@
 
 ;; Behaviors
 
+(defcustom meow-use-cursor-position-hack nil
+  "Whether to use cursor position hack."
+  :group 'meow
+  :type 'boolean)
+
+(defcustom meow-use-enhanced-selection-effect nil
+  "Whether to use enhanced cursor effect.
+
+This will affect how selection is displayed."
+  :group 'meow
+  :type 'boolean)
+
 (defcustom meow-expand-exclude-mode-list
   '(markdown-mode org-mode)
   "A list of major modes where after command expand should be disabled."
@@ -56,7 +68,8 @@
   '((normal . "NORMAL")
     (motion . "MOTION")
     (keypad . "KEYPAD")
-    (insert . "INSERT"))
+    (insert . "INSERT")
+    (bmacro . "BMACRO"))
   "A list of mappings for how to display state in indicator."
   :group 'meow
   :type 'list)
@@ -130,6 +143,13 @@
   :group 'meow
   :type 'boolean)
 
+(defcustom meow-use-dynamic-face-color t
+  "Whether to use dynamic calculated face color.
+
+This option will affect the color of position hint and fake region cursor."
+  :group 'meow
+  :type 'boolean)
+
 (defcustom meow-mode-state-list
   '((cider-browse-spec-view-mode . motion)
     (beancount-mode . normal)
@@ -152,6 +172,7 @@
     (py-shell-mode . normal)
     (term-mode . normal)
     (Custom-mode . normal)
+    (edmacro-mode . normal)
     (jupyter-repl-mode . normal))
   "A list of rules, each is (major-mode . init-state).
 
@@ -201,7 +222,9 @@ Use (setq meow-keypad-describe-keymap-function 'nil) to disable popup.")
 (defvar meow-cursor-type-default 'box)
 (defvar meow-cursor-type-normal 'box)
 (defvar meow-cursor-type-motion 'box)
-(defvar meow-cursor-type-insert '(bar . 4))
+(defvar meow-cursor-type-bmacro 'box)
+(defvar meow-cursor-type-region-cursor '(bar . 2))
+(defvar meow-cursor-type-insert '(bar . 2))
 (defvar meow-cursor-type-keypad 'hollow)
 
 ;; Keypad states
@@ -366,6 +389,9 @@ Has a structure of (sel-type point mark).")
 
 ;;; Internal variables
 
+(defvar-local meow--end-kmacro-on-exit nil
+  "Whether we end kmacro recording when exit insert state.")
+
 (defvar-local meow--temp-normal nil
   "Whether we are in temporary normal state. ")
 
@@ -399,6 +425,10 @@ Has a structure of (sel-type point mark).")
 (defvar meow--motion-overwrite-keys
   '(" ")
   "A list of keybindings to overwrite in MOTION state.")
+
+(defvar meow--bmacro-backup-hl-line
+  nil
+  "Whether hl-line is enabled by user.")
 
 (defvar-local meow--insert-pos nil
   "The position where we enter INSERT state.")
@@ -498,6 +528,12 @@ Has a structure of (sel-type point mark).")
   "The backup for `delete-active-region'.
 
 It is used to restore its value when disable `meow'.")
+
+(defvar meow--backup-redisplay-highlight-region-function
+  redisplay-highlight-region-function)
+
+(defvar meow--backup-redisplay-unhighlight-region-function
+  redisplay-unhighlight-region-function)
 
 ;; aliases for compatibility
 (defvaralias 'meow--keypad-meta-prefix 'meow-keypad-meta-prefix)

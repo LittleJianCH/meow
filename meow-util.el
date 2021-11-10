@@ -26,6 +26,7 @@
 (require 'dash)
 (require 's)
 (require 'seq)
+(require 'color)
 
 (require 'meow-var)
 (require 'meow-keymap)
@@ -58,6 +59,10 @@
   "Whether keypad mode is enabled."
   (bound-and-true-p meow-keypad-mode))
 
+(defun meow-bmacro-mode-p ()
+  "Whether keypad mode is enabled."
+  (bound-and-true-p meow-bmacro-mode))
+
 (defun meow--read-cursor-face-color (face)
   "Read cursor color from face."
   (let ((f (face-attribute face :inherit)))
@@ -67,6 +72,15 @@
               (face-attribute 'default :foreground)
             color))
       (meow--read-cursor-face-color f))))
+
+(defun meow--set-cursor-type (type)
+  (if (display-graphic-p)
+      (setq cursor-type type)
+    (let* ((shape (or (car-safe type) type))
+           (param (cond ((eq shape 'bar) "6")
+                        ((eq shape 'hbar) "4")
+                        (t "2"))))
+      (send-string-to-terminal (concat "\e[" param " q")))))
 
 (defun meow--set-cursor-color (face)
   "Set cursor color by face."
@@ -79,25 +93,32 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
   (cond
    ;; Don't alter the cursor-type if it's already hidden
    ((null cursor-type)
-    (setq cursor-type meow-cursor-type-default)
+    (meow--set-cursor-type meow-cursor-type-default)
     (meow--set-cursor-color 'meow-unknown-cursor))
    ((minibufferp)
-    (setq cursor-type meow-cursor-type-default)
+    (meow--set-cursor-type meow-cursor-type-default)
     (meow--set-cursor-color 'meow-unknown-cursor))
    ((meow-insert-mode-p)
-    (setq cursor-type meow-cursor-type-insert)
+    (meow--set-cursor-type meow-cursor-type-insert)
     (meow--set-cursor-color 'meow-insert-cursor))
    ((meow-normal-mode-p)
-    (setq cursor-type meow-cursor-type-normal)
+    (if meow-use-cursor-position-hack
+        ;; Ensure we have correct cursor type after switch state.
+        (unless (use-region-p)
+          (meow--set-cursor-type meow-cursor-type-normal))
+      (meow--set-cursor-type meow-cursor-type-normal))
     (meow--set-cursor-color 'meow-normal-cursor))
    ((meow-motion-mode-p)
-    (setq cursor-type meow-cursor-type-motion)
+    (meow--set-cursor-type meow-cursor-type-motion)
     (meow--set-cursor-color 'meow-motion-cursor))
    ((meow-keypad-mode-p)
-    (setq cursor-type meow-cursor-type-keypad)
+    (meow--set-cursor-type meow-cursor-type-keypad)
     (meow--set-cursor-color 'meow-keypad-cursor))
+   ((meow-bmacro-mode-p)
+    (meow--set-cursor-type meow-cursor-type-bmacro)
+    (meow--set-cursor-color 'meow-bmacro-cursor))
    (t
-    (setq cursor-type meow-cursor-type-default)
+    (meow--set-cursor-type meow-cursor-type-default)
     (meow--set-cursor-color 'meow-unknown-cursor))))
 
 (defun meow--get-state-name (state)
@@ -124,6 +145,10 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
       (propertize
        (format " %s " (meow--get-state-name 'insert))
        'face 'meow-insert-indicator))
+     ((bound-and-true-p meow-bmacro-mode)
+      (propertize
+       (format " %s " (meow--get-state-name 'bmacro))
+       'face 'meow-bmacro-indicator))
      (t ""))))
 
 (defun meow--update-indicator ()
@@ -135,7 +160,8 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
    ((bound-and-true-p meow-insert-mode) 'insert)
    ((bound-and-true-p meow-normal-mode) 'normal)
    ((bound-and-true-p meow-motion-mode) 'motion)
-   ((bound-and-true-p meow-keypad-mode) 'keypad)))
+   ((bound-and-true-p meow-keypad-mode) 'keypad)
+   ((bound-and-true-p meow-bmacro-mode) 'cursor)))
 
 (defun meow--should-update-display-p ()
   (cl-case meow-update-display-in-macro
@@ -161,7 +187,9 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
          (meow--save-origin-commands))
        (meow-motion-mode 1))
       ('keypad
-       (meow-keypad-mode 1)))
+       (meow-keypad-mode 1))
+      ('bmacro
+       (meow-bmacro-mode 1)))
     (run-hook-with-args 'meow-switch-state-hook state)
     (when (meow--should-update-display-p)
       (meow--update-indicator)
@@ -232,6 +260,10 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
   "Update cursor style after switching window."
   (meow--update-cursor)
   (meow--update-indicator))
+
+(defun meow--on-exit ()
+  (unless (display-graphic-p)
+    (send-string-to-terminal "\e[2 q")))
 
 (defun meow--get-indent ()
   "Get indent of current line."
@@ -468,6 +500,97 @@ For performance reasons, we save current cursor type to `meow--last-cursor-type'
     (meow--remove-match-highlights))
   (meow--remove-expand-highlights)
   (meow--remove-search-highlight))
+
+(defun meow--remove-fake-cursor (rol)
+  (when (overlayp rol)
+    (when-let ((ovs (overlay-get rol 'meow-face-cursor)))
+      (mapc (lambda (o) (when (overlayp o) (delete-overlay o)))
+            ovs))))
+
+(defvar meow--region-cursor-faces '(meow-region-cursor-1
+                                    meow-region-cursor-2
+                                    meow-region-cursor-3))
+
+(defun meow--add-fake-cursor (rol)
+  (if (and meow-use-enhanced-selection-effect
+           (or (meow-normal-mode-p)
+               (meow-bmacro-mode-p)))
+      (when (overlayp rol)
+        (let ((start (overlay-start rol))
+              (end (overlay-end rol)))
+          (unless (= start end)
+            (let (ovs)
+                (if (meow--direction-forward-p)
+                    (progn
+                      (let ((p end)
+                            (i 0))
+                        (while (and (> p start)
+                                    (< i 3))
+                          (let ((ov (make-overlay (1- p) p)))
+                            (overlay-put ov 'face (nth i meow--region-cursor-faces))
+                            (overlay-put ov 'priority 10)
+                            (overlay-put ov 'window (overlay-get rol 'window))
+                            (cl-decf p)
+                            (cl-incf i)
+                            (push ov ovs)))))
+                  (let ((p start)
+                        (i 0))
+                    (while (and (< p end)
+                                (< i 3))
+                      (let ((ov (make-overlay p (1+ p))))
+                        (overlay-put ov 'face (nth i meow--region-cursor-faces))
+                        (overlay-put ov 'priority 10)
+                        (overlay-put ov 'window (overlay-get rol 'window))
+                        (cl-incf p)
+                        (cl-incf i)
+                        (push ov ovs)))))
+                (overlay-put rol 'meow-face-cursor ovs)))
+          rol))
+    rol))
+
+(defun meow--redisplay-highlight-region-function (start end window rol)
+  (when (and (or (meow-normal-mode-p)
+                 (meow-bmacro-mode-p))
+             (equal window (selected-window)))
+    (if (use-region-p)
+        (meow--set-cursor-type meow-cursor-type-region-cursor)
+      (meow--set-cursor-type meow-cursor-type-normal)))
+  (when meow-use-enhanced-selection-effect
+    (meow--remove-fake-cursor rol))
+  (-> (funcall meow--backup-redisplay-highlight-region-function start end window rol)
+    (meow--add-fake-cursor)))
+
+(defun meow--redisplay-unhighlight-region-function (rol)
+  (meow--remove-fake-cursor rol)
+  (when (and (overlayp rol)
+             (equal (overlay-get rol 'window) (selected-window))
+             (or (meow-normal-mode-p)
+                 (meow-bmacro-mode-p)))
+    (meow--set-cursor-type meow-cursor-type-normal))
+  (funcall meow--backup-redisplay-unhighlight-region-function rol))
+
+(defun meow--mix-color (color1 color2 n)
+  (mapcar (lambda (c) (apply #'color-rgb-to-hex c))
+          (color-gradient (color-name-to-rgb color1)
+                          (color-name-to-rgb color2)
+                          n)))
+
+(defun meow--bmacro-inside-secondary-selection ()
+  (and
+   (secondary-selection-exist-p)
+   (<= (overlay-start mouse-secondary-overlay)
+       (point)
+       (overlay-end mouse-secondary-overlay))))
+
+(defun meow--narrow-secondary-selection ()
+  (narrow-to-region (overlay-start mouse-secondary-overlay)
+                    (overlay-end mouse-secondary-overlay)))
+
+(defun meow--hack-cursor-pos (pos)
+  "Hack the point when `meow-use-cursor-position-hack' is enabled."
+  (if meow-use-cursor-position-hack
+      (1- pos)
+    pos))
 
 (provide 'meow-util)
 ;;; meow-util.el ends here

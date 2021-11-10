@@ -32,49 +32,58 @@
 (require 'meow-var)
 (require 'meow-esc)
 (require 'meow-shims)
+(require 'meow-bmacro)
 
 ;;;###autoload
 (define-minor-mode meow-insert-mode
   "Meow Insert state."
-  nil
-  " [I]"
-  meow-insert-state-keymap
+  :init-value nil
+  :lighter " [I]"
+  :keymap meow-insert-state-keymap
   (meow--insert-init))
 
 ;;;###autoload
 (define-minor-mode meow-normal-mode
   "Meow Normal state."
-  nil
-  " [N]"
-  meow-normal-state-keymap
+  :init-value nil
+  :lighter " [N]"
+  :keymap meow-normal-state-keymap
   (meow--normal-init))
 
 ;;;###autoload
 (define-minor-mode meow-keypad-mode
   "Meow keypad state."
-  nil
-  " [K]"
+  :init-value nil
+  :lighter " [K]"
   ;; use overriding-local-map for highest keymap priority
   ;; so KEYPAD won't be affected by overlays' keymap
-  meow-keypad-state-keymap
+  :keymap meow-keypad-state-keymap
   (meow--keypad-init))
 
 ;;;###autoload
 (define-minor-mode meow-motion-mode
   "Meow motion state."
-  nil
-  " [M]"
-  meow-motion-state-keymap
+  :init-value nil
+  :lighter " [M]"
+  :keymap meow-motion-state-keymap
   (meow--motion-init))
+
+;;;###autoload
+(define-minor-mode meow-bmacro-mode
+  "Meow cursor state."
+  :init-value nil
+  :lighter " [C]"
+  :keymap meow-bmacro-state-keymap
+  (meow--bmacro-init))
 
 ;;;###autoload
 (define-minor-mode meow-mode
   "Meow minor mode.
 
 This minor mode is used by meow-global-mode, should not be enabled directly."
-  nil
-  nil
-  meow-keymap
+  :init-value nil
+  :global nil
+  :keymap meow-keymap
   (if meow-mode
       (meow--enable)
     (meow--disable)))
@@ -98,7 +107,8 @@ This minor mode is used by meow-global-mode, should not be enabled directly."
   "Init normal state."
   (when meow-normal-mode
     (when (bound-and-true-p meow-insert-mode) (meow-insert-mode -1))
-    (when (bound-and-true-p meow-motion-mode) (meow-motion-mode -1))))
+    (when (bound-and-true-p meow-motion-mode) (meow-motion-mode -1))
+    (when (bound-and-true-p meow-bmacro-mode) (meow-bmacro-mode -1))))
 
 (defun meow--insert-init ()
   "Init insert state."
@@ -139,6 +149,20 @@ We have to remember previous state, so that we can restore it."
           meow--use-meta nil
           meow--use-both nil)))
 
+(defun meow--bmacro-init ()
+  "Init cursor state."
+  (setq meow--bmacro-backup-hl-line
+        (bound-and-true-p hl-line-mode))
+  (if meow-bmacro-mode
+      (progn
+        (meow--cancel-selection)
+        (meow-normal-mode -1)
+        (meow-insert-mode -1)
+        (hl-line-mode -1))
+    (meow-normal-mode 1)
+    (when meow--bmacro-backup-hl-line
+      (hl-line-mode 1))))
+
 (defun meow--enable ()
   "Enable Meow.
 
@@ -153,7 +177,8 @@ then SPC will be bound to LEADER."
   "Disable Meow."
   (meow-normal-mode -1)
   (meow-insert-mode -1)
-  (meow-motion-mode -1))
+  (meow-motion-mode -1)
+  (meow-bmacro-mode -1))
 
 (defun meow--global-enable ()
   "Enable meow globally."
@@ -161,6 +186,10 @@ then SPC will be bound to LEADER."
   (add-hook 'window-state-change-functions #'meow--on-window-state-change)
   (add-hook 'minibuffer-setup-hook #'meow--minibuffer-setup)
   (add-hook 'pre-command-hook 'meow--highlight-pre-command)
+  (add-hook 'post-command-hook 'meow--maybe-toggle-cursor-mode)
+  (add-hook 'suspend-hook 'meow--on-exit)
+  (add-hook 'suspend-resume-hook 'meow--update-cursor)
+  (add-hook 'kill-emacs-hook 'meow--on-exit)
   (meow--enable-shims)
   ;; meow-esc-mode fix ESC in TUI
   (unless window-system
@@ -171,7 +200,12 @@ then SPC will be bound to LEADER."
   (add-to-ordered-list 'emulation-mode-map-alists
 					   `((meow-normal-mode . ,meow-normal-state-keymap)))
   (add-to-ordered-list 'emulation-mode-map-alists
-					   `((meow-keypad-mode . ,meow-keypad-state-keymap))))
+					   `((meow-keypad-mode . ,meow-keypad-state-keymap)))
+  (when meow-use-cursor-position-hack
+    (setq redisplay-highlight-region-function #'meow--redisplay-highlight-region-function)
+    (setq redisplay-unhighlight-region-function #'meow--redisplay-unhighlight-region-function))
+  (meow--prepare-face)
+  (advice-add 'load-theme :after 'meow--prepare-face))
 
 (defun meow--global-disable ()
   "Disable Meow globally."
@@ -179,10 +213,18 @@ then SPC will be bound to LEADER."
   (remove-hook 'window-state-change-functions #'meow--on-window-state-change)
   (remove-hook 'minibuffer-setup-hook #'meow--minibuffer-setup)
   (remove-hook 'pre-command-hook 'meow--highlight-pre-command)
+  (remove-hook 'post-command-hook 'meow--maybe-toggle-cursor-mode)
+  (remove-hook 'suspend-hook 'meow--on-exit)
+  (remove-hook 'suspend-resume-hook 'meow--update-cursor)
+  (remove-hook 'kill-emacs-hook 'meow--on-exit)
   (meow--disable-shims)
   (meow--remove-modeline-indicator)
+  (when meow-use-cursor-position-hack
+    (setq redisplay-highlight-region-function meow--backup-redisplay-highlight-region-function)
+    (setq redisplay-unhighlight-region-function meow--backup-redisplay-unhighlight-region-function))
   (unless window-system
-    (meow-esc-mode -1)))
+    (meow-esc-mode -1))
+  (advice-remove 'load-theme 'meow--prepare-face))
 
 (provide 'meow-core)
 ;;; meow-core.el ends here
